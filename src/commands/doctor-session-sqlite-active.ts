@@ -66,6 +66,12 @@ export async function prepareActiveSqliteTranscriptSettlement(params: {
           env: params.env,
           mode,
         });
+      await restoreColdSessionTranscriptsForImport({
+        agentId: target.agentId,
+        env: params.env,
+        sessionIds: [source.sessionId],
+        storePath: target.storePath,
+      });
       let verified = verify("appendable");
       if (!verified) {
         throw new Error(
@@ -73,12 +79,6 @@ export async function prepareActiveSqliteTranscriptSettlement(params: {
         );
       }
       if (verified.missingEvents > 0) {
-        await restoreColdSessionTranscriptsForImport({
-          agentId: target.agentId,
-          env: params.env,
-          sessionIds: [source.sessionId],
-          storePath: target.sqlitePath,
-        });
         const [imported] = await importSqliteSessionRowsBatch([
           {
             agentId: target.agentId,

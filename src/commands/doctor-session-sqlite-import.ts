@@ -94,41 +94,38 @@ export async function importLegacySessionRecords(
       return;
     }
     for (let offset = 0; offset < records.length; offset += SESSION_IMPORT_BATCH_SIZE) {
-      const pending = records
-        .slice(offset, offset + SESSION_IMPORT_BATCH_SIZE)
-        .flatMap((record) => {
-          // Unreadable history cannot authorize replay of a current node's metadata or generation.
-          record.preserveCurrentSession ||=
-            recoveryHistoryUnverified || Boolean(assertRestoredIndexCurrent);
-          try {
-            const prepared = prepareLegacySessionImport(
-              target,
-              record,
-              report,
-              importedTranscriptSources,
-              existingSnapshot.snapshot,
-              env,
-              recoveryHistoryUnverified,
-            );
-            return prepared ? [{ ...prepared, params: { ...prepared.params, env }, record }] : [];
-          } catch (error) {
-            report.issues.push({
-              code: "legacy_import_deferred",
-              sessionKey: record.sessionKey,
-              message: `${record.transcriptPath ?? target.storePath}: ${formatErrorMessage(error)}. Original retained; verify this source against a backup and rerun openclaw doctor --fix.`,
-            });
-            return [];
-          }
-        });
-      if (pending.length > 0) {
-        await restoreColdSessionTranscriptsForImport({
-          agentId: target.agentId,
-          assertCurrent: assertRestoredIndexCurrent,
-          env,
-          sessionIds: pending.map((entry) => entry.params.entry.sessionId),
-          storePath: target.storePath,
-        });
-      }
+      const batch = records.slice(offset, offset + SESSION_IMPORT_BATCH_SIZE);
+      await restoreColdSessionTranscriptsForImport({
+        agentId: target.agentId,
+        assertCurrent: assertRestoredIndexCurrent,
+        env,
+        sessionIds: batch.map((record) => record.entry.sessionId),
+        storePath: target.storePath,
+      });
+      const pending = batch.flatMap((record) => {
+        // Unreadable history cannot authorize replay of a current node's metadata or generation.
+        record.preserveCurrentSession ||=
+          recoveryHistoryUnverified || Boolean(assertRestoredIndexCurrent);
+        try {
+          const prepared = prepareLegacySessionImport(
+            target,
+            record,
+            report,
+            importedTranscriptSources,
+            existingSnapshot.snapshot,
+            env,
+            recoveryHistoryUnverified,
+          );
+          return prepared ? [{ ...prepared, params: { ...prepared.params, env }, record }] : [];
+        } catch (error) {
+          report.issues.push({
+            code: "legacy_import_deferred",
+            sessionKey: record.sessionKey,
+            message: `${record.transcriptPath ?? target.storePath}: ${formatErrorMessage(error)}. Original retained; verify this source against a backup and rerun openclaw doctor --fix.`,
+          });
+          return [];
+        }
+      });
       const imported = await importSqliteSessionRowsBatch(
         pending.map((entry, index) => ({
           ...entry.params,

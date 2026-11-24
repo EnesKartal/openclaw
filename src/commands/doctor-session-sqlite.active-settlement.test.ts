@@ -26,6 +26,7 @@ import {
   withOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import { importLegacySessionRecords } from "./doctor-session-sqlite-import.js";
 import { jsonl, messageEvent } from "./doctor-session-sqlite.fixtures.test-support.js";
 import {
   runDoctorSessionSqlite,
@@ -356,7 +357,11 @@ it("preserves an invalid main transcript without assigning its failure to a clea
 
 it("restores valid cold transcripts before running Doctor session.import.batch", async () => {
   await withOpenClawTestState({ label: "active-june-cold-import" }, async (state) => {
-    const { options, sessions } = await seedImportedHistory(state, { main: "equal" }, false);
+    const { options, sessions } = await seedImportedHistory(
+      state,
+      { main: "missing-delta" },
+      false,
+    );
     const session = sessions[0]!;
     const db = openOpenClawAgentDatabase({ agentId: session.agentId, env: state.env });
     db.db
@@ -380,39 +385,47 @@ it("restores valid cold transcripts before running Doctor session.import.batch",
     });
     expect(readSessionColdTranscript(dbAfterArchive.db, session.sessionId)?.storage).toBe("file");
 
-    const storePath = path.join(state.sessionsDir("main"), "sessions.json");
-    const legacyTranscriptPath = path.join(state.sessionsDir("main"), `${session.sessionId}.jsonl`);
-    fs.writeFileSync(legacyTranscriptPath, jsonl(...transcriptEvents(session.sessionId)));
-    fs.writeFileSync(
-      storePath,
-      JSON.stringify({
-        [session.sessionKey]: {
-          sessionId: session.sessionId,
-          updatedAt: 1,
-          sessionFile: legacyTranscriptPath,
-        },
-      }),
-    );
-
     await withDoctorSqliteMaintenanceLock({
       env: state.env,
       operation: "import retained cold transcript",
       run: async () => {
-        const report = await runDoctorSessionSqlite({ ...options, mode: "import" });
-        expect(
-          report.targets
-            .flatMap((target) => target.issues)
-            .filter(
-              (issue) =>
-                issue.code === "sqlite_import_failed" || issue.code === "legacy_import_deferred",
-            ),
-        ).toEqual([]);
+        const sqlitePath = resolveTargetSqlitePath(session, state.env);
+        const report = {
+          agentId: session.agentId,
+          storePath: session.storePath,
+          sqlitePath,
+          discoveredEntries: 1,
+          importedEntries: 0,
+          importedTranscriptEvents: 0,
+          validatedEntries: 0,
+          validatedTranscriptEvents: 0,
+          removedLegacyFiles: 0,
+          archivedLegacyFiles: 0,
+          issues: [],
+        };
+        await importLegacySessionRecords(
+          {
+            target: { agentId: session.agentId, storePath: session.storePath, sqlitePath },
+            env: state.env,
+          },
+          [
+            {
+              sessionKey: session.sessionKey,
+              entry: { sessionId: session.sessionId, updatedAt: 1 },
+              transcriptPath: session.sourcePath,
+              transcriptDependencies: [session.sourcePath],
+              sourceMtimeMs: 1,
+            },
+          ],
+          report,
+        );
+        expect(report.issues).toEqual([]);
         const dbAfterImport = openOpenClawAgentDatabase({
           agentId: session.agentId,
           env: state.env,
         });
         expect(readSessionColdTranscript(dbAfterImport.db, session.sessionId)).toBeUndefined();
-        expect(loadTranscriptEventsSync(session)).toEqual(session.canonical);
+        expect(loadTranscriptEventsSync(session)).toEqual(session.sourceEvents);
       },
     });
   });
